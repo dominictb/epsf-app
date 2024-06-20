@@ -1037,10 +1037,7 @@ function buildOnyxDataForInvoice(
                     pendingAction: null,
                     errors: null,
                 },
-                [iouAction.reportActionID]: {
-                    pendingAction: null,
-                    errors: null,
-                },
+                [iouAction.reportActionID]: null,
             },
         },
         {
