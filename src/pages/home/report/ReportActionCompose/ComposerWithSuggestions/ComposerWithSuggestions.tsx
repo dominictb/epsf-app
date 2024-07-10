@@ -350,20 +350,6 @@ function ComposerWithSuggestions(
         [],
     );
 
-    useEffect(() => {
-        const switchToCurrentReport = DeviceEventEmitter.addListener(`switchToPreExistingReport_${reportID}`, ({preexistingReportID, callback}: SwitchToCurrentReportProps) => {
-            if (!commentRef.current) {
-                callback();
-                return;
-            }
-            Report.saveReportDraftComment(preexistingReportID, commentRef.current, callback);
-        });
-
-        return () => {
-            switchToCurrentReport.remove();
-        };
-    }, [reportID]);
-
     /**
      * Find the newly added characters between the previous text and the new text based on the selection.
      *

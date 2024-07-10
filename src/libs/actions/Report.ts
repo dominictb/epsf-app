@@ -171,6 +171,16 @@ Onyx.connect({
     },
 });
 
+let allReportDraftComments = {};
+
+Onyx.connect({
+    key: ONYXKEYS.COLLECTION.REPORT_DRAFT_COMMENT,
+    waitForCollectionCallback: true,
+    callback: (value) => {
+        allReportDraftComments = value;
+    },
+});
+
 let preferredSkinTone: number = CONST.EMOJI_DEFAULT_SKIN_TONE;
 Onyx.connect({
     key: ONYXKEYS.PREFERRED_EMOJI_SKIN_TONE,
@@ -1330,10 +1340,14 @@ function handleReportChanged(report: OnyxEntry<Report>) {
                 Navigation.navigate(ROUTES.REPORT_WITH_ID.getRoute(report.preexistingReportID ?? '-1'), CONST.NAVIGATION.TYPE.UP);
             };
         }
-        DeviceEventEmitter.emit(`switchToPreExistingReport_${report.reportID}`, {
-            preexistingReportID: report.preexistingReportID,
-            callback,
-        });
+        const draftComment = allReportDraftComments[`${ONYXKEYS.COLLECTION.REPORT_DRAFT_COMMENT}${report.reportID}`];
+
+        if (!draftComment) {
+            callback();
+            return;
+        }
+
+        saveReportDraftComment(report.preexistingReportID, draftComment, callback);
         return;
     }
 
