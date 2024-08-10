@@ -137,6 +137,7 @@ function IOURequestStartPage({
                                     id={CONST.TAB.IOU_REQUEST_TYPE}
                                     onTabSelected={resetIOUTypeIfChanged}
                                     tabBar={TabSelector}
+                                    defaultTab={'scan'}
                                 >
                                     <TopTab.Screen name={CONST.TAB_REQUEST.MANUAL}>
                                         {() => (

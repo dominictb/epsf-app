@@ -37,13 +37,13 @@ export const TopTab = createMaterialTopTabNavigator();
 
 // This takes all the same props as MaterialTopTabsNavigator: https://reactnavigation.org/docs/material-top-tab-navigator/#props,
 // except ID is now required, and it gets a `selectedTab` from Onyx
-function OnyxTabNavigator({id, selectedTab, children, onTabSelected = () => {}, screenListeners, ...rest}: OnyxTabNavigatorProps) {
+function OnyxTabNavigator({id, defaultTab, selectedTab, children, onTabSelected = () => {}, screenListeners, ...rest}: OnyxTabNavigatorProps) {
     return (
         <TopTab.Navigator
             /* eslint-disable-next-line react/jsx-props-no-spreading */
             {...rest}
             id={id}
-            initialRouteName={selectedTab}
+            initialRouteName={selectedTab || defaultTab}
             backBehavior="initialRoute"
             keyboardDismissMode="none"
             screenListeners={{
