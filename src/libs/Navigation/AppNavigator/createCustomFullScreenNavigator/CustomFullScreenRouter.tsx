@@ -3,6 +3,8 @@ import {StackRouter} from '@react-navigation/native';
 import getIsNarrowLayout from '@libs/getIsNarrowLayout';
 import SCREENS from '@src/SCREENS';
 import type {FullScreenNavigatorRouterOptions} from './types';
+import * as PolicyUtils from '@libs/PolicyUtils';
+import {isEmptyObject} from '@src/types/utils/EmptyObject';
 
 type StackState = StackNavigationState<ParamListBase> | PartialState<StackNavigationState<ParamListBase>>;
 
@@ -14,6 +16,12 @@ function adaptStateIfNecessary(state: StackState) {
 
     // There should always be WORKSPACE.INITIAL screen in the state to make sure go back works properly if we deeplinkg to a subpage of settings.
     if (!isAtLeastOneInState(state, SCREENS.WORKSPACE.INITIAL)) {
+        const policy = PolicyUtils.getPolicy(workspaceCentralPane?.params?.policyID);
+        const isPolicyNotAccessible = isEmptyObject(policy) || (Object.keys(policy).length === 1 && !isEmptyObject(policy.errors)) || !policy?.id;
+        if (isPolicyNotAccessible) {
+            return;
+        }
+
         // @ts-expect-error Updating read only property
         // noinspection JSConstantReassignment
         state.stale = true; // eslint-disable-line
