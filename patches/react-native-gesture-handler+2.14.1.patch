@@ -10,7 +10,7 @@ index b999c2c..583a5d2 100644
  #import <React/RCTUtils.h>
  #import <ReactCommon/CallInvoker.h>
  #import <ReactCommon/RCTTurboModule.h>
-@@ -32,7 +31,7 @@
+@@ -32,7 +31,7 @@ using namespace react;
  #endif // RCT_NEW_ARCH_ENABLED
  
  #ifdef RCT_NEW_ARCH_ENABLED
@@ -19,7 +19,7 @@ index b999c2c..583a5d2 100644
  
  @end
  #else
-@@ -66,9 +65,7 @@ - (void)invalidate
+@@ -66,9 +65,7 @@ RCT_EXPORT_MODULE()
  
    _manager = nil;
  
@@ -30,7 +30,7 @@ index b999c2c..583a5d2 100644
    [self.bridge.uiManager.observerCoordinator removeObserver:self];
  #endif // RCT_NEW_ARCH_ENABLED
  }
-@@ -113,9 +110,7 @@ - (void)setBridge:(RCTBridge *)bridge
+@@ -113,9 +110,7 @@ void decorateRuntime(jsi::Runtime &runtime)
                                                  eventDispatcher:bridge.eventDispatcher];
    _operations = [NSMutableArray new];
  
@@ -41,7 +41,7 @@ index b999c2c..583a5d2 100644
    [bridge.uiManager.observerCoordinator addObserver:self];
  #endif // RCT_NEW_ARCH_ENABLED
  }
-@@ -241,27 +236,7 @@ - (void)addOperationBlock:(GestureHandlerOperation)operation
+@@ -241,27 +236,7 @@ RCT_EXPORT_METHOD(flushOperations)
    [_operations addObject:operation];
  }
  
@@ -69,4 +69,942 @@ index b999c2c..583a5d2 100644
 +#ifndef RCT_NEW_ARCH_ENABLED
  
  #pragma mark - RCTUIManagerObserver
+ 
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js b/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
+index 387d4a9..7f3e35c 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
+@@ -368,6 +368,10 @@ export default class GestureHandler {
+   // Events Sending
+   //
+ 
++  onDestroy() {
++    this.delegate.destroy(this.config);
++  }
++
+ 
+   transformEventData(newState, oldState) {
+     return {
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web/tools/GestureHandlerWebDelegate.js b/node_modules/react-native-gesture-handler/lib/module/web/tools/GestureHandlerWebDelegate.js
+index b805992..d11cf45 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web/tools/GestureHandlerWebDelegate.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web/tools/GestureHandlerWebDelegate.js
+@@ -98,5 +98,11 @@ export class GestureHandlerWebDelegate {
+     this.tryResetCursor();
+   }
+ 
++  destroy() {
++    this.eventManagers.forEach(manager => {
++      manager.removeListeners();
++    });
++  }
++
+ }
+ //# sourceMappingURL=GestureHandlerWebDelegate.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web/tools/NodeManager.js b/node_modules/react-native-gesture-handler/lib/module/web/tools/NodeManager.js
+index 9b6bdea..edeb5ba 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web/tools/NodeManager.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web/tools/NodeManager.js
+@@ -24,7 +24,7 @@ export default class NodeManager {
+       return;
+     } // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+ 
+-
++    this.gestures[handlerTag].onDestroy();
+     delete this.gestures[handlerTag];
+   }
+ 
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js b/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
+index d55acb7..44abde1 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
+@@ -11,155 +11,202 @@ export default class PointerEventManager extends EventManager {
+     _defineProperty(this, "trackedPointers", new Set());
+   }
+ 
+-  setListeners() {
+-    this.view.addEventListener('pointerdown', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
+-
+-      if (!isPointerInBounds(this.view, {
+-        x: event.clientX,
+-        y: event.clientY
+-      })) {
+-        return;
+-      }
++  pointerDownListener = (event) => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++    if (
++      !isPointerInBounds(this.view, { x: event.clientX, y: event.clientY })
++    ) {
++      return;
++    }
++
++    const adaptedEvent = this.mapEvent(event, EventTypes.DOWN);
++    const target = event.target;
++
++    if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
++      target.setPointerCapture(adaptedEvent.pointerId);
++    }
++
++    this.markAsInBounds(adaptedEvent.pointerId);
++    this.trackedPointers.add(adaptedEvent.pointerId);
++
++    if (++this.activePointersCounter > 1) {
++      adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
++      this.onPointerAdd(adaptedEvent);
++    } else {
++      this.onPointerDown(adaptedEvent);
++    }
++  }
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.DOWN);
+-      const target = event.target;
++  pointerUpListener = (event) => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++
++    // When we call reset on gesture handlers, it also resets their event managers
++    // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
++    // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
++    // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
++    if (this.activePointersCounter === 0) {
++      return;
++    }
++
++    const adaptedEvent = this.mapEvent(event, EventTypes.UP);
++    const target = event.target;
++
++    if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
++      target.releasePointerCapture(adaptedEvent.pointerId);
++    }
++
++    this.markAsOutOfBounds(adaptedEvent.pointerId);
++    this.trackedPointers.delete(adaptedEvent.pointerId);
++
++    if (--this.activePointersCounter > 0) {
++      adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
++      this.onPointerRemove(adaptedEvent);
++    } else {
++      this.onPointerUp(adaptedEvent);
++    }
++  }
+ 
+-      if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
+-        target.setPointerCapture(adaptedEvent.pointerId);
+-      }
++  pointerMoveListener = (event) => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++
++    const adaptedEvent =  this.mapEvent(event, EventTypes.MOVE);
++    const target = event.target;
++
++    // You may be wondering why are we setting pointer capture here, when we
++    // already set it in `pointerdown` handler. Well, that's a great question,
++    // for which I don't have an answer. Specification (https://www.w3.org/TR/pointerevents2/#dom-element-setpointercapture)
++    // says that the requirement for `setPointerCapture` to work is that pointer
++    // must be in 'active buttons state`, otherwise it will fail silently, which
++    // is lovely. Obviously, when `pointerdown` is fired, one of the buttons
++    // (when using mouse) is pressed, but that doesn't mean that `setPointerCapture`
++    // will succeed, for some reason. Since it fails silently, we don't actually know
++    // if it worked or not (there's `gotpointercapture` event, but the complexity of
++    // incorporating it here seems stupid), so we just call it again here, every time
++    // pointer moves until it succeeds.
++    // God, I do love web development.
++    if (
++      !target.hasPointerCapture(event.pointerId) &&
++      !POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)
++    ) {
++      target.setPointerCapture(event.pointerId);
++    }
++
++    const inBounds =  isPointerInBounds(this.view, {
++      x: adaptedEvent.x,
++      y: adaptedEvent.y,
++    });
+ 
+-      this.markAsInBounds(adaptedEvent.pointerId);
+-      this.trackedPointers.add(adaptedEvent.pointerId);
++    const pointerIndex = this.pointersInBounds.indexOf(
++      adaptedEvent.pointerId
++    );
+ 
+-      if (++this.activePointersCounter > 1) {
+-        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
+-        this.onPointerAdd(adaptedEvent);
++    if (inBounds) {
++      if (pointerIndex < 0) {
++        adaptedEvent.eventType = EventTypes.ENTER;
++        this.onPointerEnter(adaptedEvent);
++        this.markAsInBounds(adaptedEvent.pointerId);
+       } else {
+-        this.onPointerDown(adaptedEvent);
++        this.onPointerMove(adaptedEvent);
+       }
+-    });
+-    this.view.addEventListener('pointerup', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      } // When we call reset on gesture handlers, it also resets their event managers
+-      // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
+-      // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
+-      // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
++    } else {
++      if (pointerIndex >= 0) {
++        adaptedEvent.eventType = EventTypes.LEAVE;
++        this.onPointerLeave(adaptedEvent);
++        this.markAsOutOfBounds(adaptedEvent.pointerId);
++      } else {
++        this.onPointerOutOfBounds(adaptedEvent);
++      }
++    }
++  }
+ 
++  pointerCancelListener = (event) => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      if (this.activePointersCounter === 0) {
+-        return;
+-      }
++    const adaptedEvent = this.mapEvent(
++      event,
++      EventTypes.CANCEL
++    );
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.UP);
+-      const target = event.target;
++    this.onPointerCancel(adaptedEvent);
++    this.markAsOutOfBounds(adaptedEvent.pointerId);
++    this.activePointersCounter = 0;
++    this.trackedPointers.clear();
++  }
+ 
+-      if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
+-        target.releasePointerCapture(adaptedEvent.pointerId);
+-      }
++  pointerEnterListener = (event) => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      this.markAsOutOfBounds(adaptedEvent.pointerId);
+-      this.trackedPointers.delete(adaptedEvent.pointerId);
++    const adaptedEvent = this.mapEvent(event, EventTypes.ENTER);
+ 
+-      if (--this.activePointersCounter > 0) {
+-        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
+-        this.onPointerRemove(adaptedEvent);
+-      } else {
+-        this.onPointerUp(adaptedEvent);
+-      }
+-    });
+-    this.view.addEventListener('pointermove', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    this.onPointerMoveOver(adaptedEvent);
++  }
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.MOVE);
+-      const target = event.target; // You may be wondering why are we setting pointer capture here, when we
+-      // already set it in `pointerdown` handler. Well, that's a great question,
+-      // for which I don't have an answer. Specification (https://www.w3.org/TR/pointerevents2/#dom-element-setpointercapture)
+-      // says that the requirement for `setPointerCapture` to work is that pointer
+-      // must be in 'active buttons state`, otherwise it will fail silently, which
+-      // is lovely. Obviously, when `pointerdown` is fired, one of the buttons
+-      // (when using mouse) is pressed, but that doesn't mean that `setPointerCapture`
+-      // will succeed, for some reason. Since it fails silently, we don't actually know
+-      // if it worked or not (there's `gotpointercapture` event, but the complexity of
+-      // incorporating it here seems stupid), so we just call it again here, every time
+-      // pointer moves until it succeeds.
+-      // God, I do love web development.
+-
+-      if (!target.hasPointerCapture(event.pointerId) && !POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
+-        target.setPointerCapture(event.pointerId);
+-      }
++  pointerLeaveListener = (event)=> {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      const inBounds = isPointerInBounds(this.view, {
+-        x: adaptedEvent.x,
+-        y: adaptedEvent.y
+-      });
+-      const pointerIndex = this.pointersInBounds.indexOf(adaptedEvent.pointerId);
+-
+-      if (inBounds) {
+-        if (pointerIndex < 0) {
+-          adaptedEvent.eventType = EventTypes.ENTER;
+-          this.onPointerEnter(adaptedEvent);
+-          this.markAsInBounds(adaptedEvent.pointerId);
+-        } else {
+-          this.onPointerMove(adaptedEvent);
+-        }
+-      } else {
+-        if (pointerIndex >= 0) {
+-          adaptedEvent.eventType = EventTypes.LEAVE;
+-          this.onPointerLeave(adaptedEvent);
+-          this.markAsOutOfBounds(adaptedEvent.pointerId);
+-        } else {
+-          this.onPointerOutOfBounds(adaptedEvent);
+-        }
+-      }
+-    });
+-    this.view.addEventListener('pointercancel', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    const adaptedEvent = this.mapEvent(event, EventTypes.LEAVE);
++
++    this.onPointerMoveOut(adaptedEvent);
++  }
++
++  losePointerCaptureListener = (event)=> {
++    const adaptedEvent = this.mapEvent(
++      event,
++      EventTypes.CANCEL
++    );
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.CANCEL);
++    if (this.trackedPointers.has(adaptedEvent.pointerId)) {
++      // in some cases the `pointerup` event is not fired, but `lostpointercapture` is
++      // we simulate the `pointercancel` event here to make sure the gesture handler stops tracking it
+       this.onPointerCancel(adaptedEvent);
+-      this.markAsOutOfBounds(adaptedEvent.pointerId);
++
+       this.activePointersCounter = 0;
+       this.trackedPointers.clear();
+-    }); // onPointerEnter and onPointerLeave are triggered by a custom logic responsible for
+-    // handling shouldCancelWhenOutside flag, and are unreliable unless the pointer is down.
+-    // We therefore use pointerenter and pointerleave events to handle the hover gesture,
+-    // mapping them to onPointerMoveOver and onPointerMoveOut respectively.
+-
+-    this.view.addEventListener('pointerenter', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    }
++  }
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.ENTER);
+-      this.onPointerMoveOver(adaptedEvent);
+-    });
+-    this.view.addEventListener('pointerleave', event => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++  setListeners() {
++    this.view.addEventListener('pointerdown', this.pointerDownListener);
+ 
+-      const adaptedEvent = this.mapEvent(event, EventTypes.LEAVE);
+-      this.onPointerMoveOut(adaptedEvent);
+-    });
+-    this.view.addEventListener('lostpointercapture', event => {
+-      const adaptedEvent = this.mapEvent(event, EventTypes.CANCEL);
+-
+-      if (this.trackedPointers.has(adaptedEvent.pointerId)) {
+-        // in some cases the `pointerup` event is not fired, but `lostpointercapture` is
+-        // we simulate the `pointercancel` event here to make sure the gesture handler stops tracking it
+-        this.onPointerCancel(adaptedEvent);
+-        this.activePointersCounter = 0;
+-        this.trackedPointers.clear();
+-      }
+-    });
++    this.view.addEventListener('pointerup', this.pointerUpListener);
++
++    this.view.addEventListener('pointermove', this.pointerMoveListener);
++
++    this.view.addEventListener('pointercancel', this.pointerCancelListener);
++
++    this.view.addEventListener('pointerenter', this.pointerEnterListener);
++
++    this.view.addEventListener('pointerleave', this.pointerLeaveListener);
++
++    this.view.addEventListener(
++      'lostpointercapture',
++      this.losePointerCaptureListener
++    );
++  }
++
++  removeListeners() {
++    this.view.removeEventListener('pointerdown', this.pointerDownListener);
++    this.view.removeEventListener('pointerup', this.pointerUpListener);
++    this.view.removeEventListener('pointermove', this.pointerMoveListener);
++    this.view.removeEventListener('pointercancel', this.pointerCancelListener);
++    this.view.removeEventListener('pointerenter', this.pointerEnterListener);
++    this.view.removeEventListener('pointerleave', this.pointerLeaveListener);
++    this.view.removeEventListener(
++      'lostpointercapture',
++      this.losePointerCaptureListener
++    );
+   }
+ 
+   mapEvent(event, eventType) {
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web/tools/TouchEventManager.js b/node_modules/react-native-gesture-handler/lib/module/web/tools/TouchEventManager.js
+index 96da16d..f316a62 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web/tools/TouchEventManager.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web/tools/TouchEventManager.js
+@@ -2,102 +2,118 @@ import { EventTypes, MouseButtons, PointerType, TouchEventType } from '../interf
+ import EventManager from './EventManager';
+ import { isPointerInBounds } from '../utils';
+ export default class TouchEventManager extends EventManager {
+-  setListeners() {
+-    this.view.addEventListener('touchstart', event => {
+-      for (let i = 0; i < event.changedTouches.length; ++i) {
+-        const adaptedEvent = this.mapEvent(event, EventTypes.DOWN, i, TouchEventType.DOWN); // Here we skip stylus, because in case of anything different than touch we want to handle it by using PointerEvents
+-        // If we leave stylus to send touch events, handlers will receive every action twice
+-
+-        if (!isPointerInBounds(this.view, {
+-          x: adaptedEvent.x,
+-          y: adaptedEvent.y
+-        }) || //@ts-ignore touchType field does exist
+-        event.changedTouches[i].touchType === 'stylus') {
+-          continue;
+-        }
+ 
+-        this.markAsInBounds(adaptedEvent.pointerId);
++  touchStartListener = event => {
++    for (let i = 0; i < event.changedTouches.length; ++i) {
++      const adaptedEvent = this.mapEvent(event, EventTypes.DOWN, i, TouchEventType.DOWN); // Here we skip stylus, because in case of anything different than touch we want to handle it by using PointerEvents
++      // If we leave stylus to send touch events, handlers will receive every action twice
+ 
+-        if (++this.activePointersCounter > 1) {
+-          adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
+-          this.onPointerAdd(adaptedEvent);
+-        } else {
+-          this.onPointerDown(adaptedEvent);
+-        }
++      if (!isPointerInBounds(this.view, {
++        x: adaptedEvent.x,
++        y: adaptedEvent.y
++      }) || //@ts-ignore touchType field does exist
++      event.changedTouches[i].touchType === 'stylus') {
++        continue;
+       }
+-    });
+-    this.view.addEventListener('touchmove', event => {
+-      for (let i = 0; i < event.changedTouches.length; ++i) {
+-        const adaptedEvent = this.mapEvent(event, EventTypes.MOVE, i, TouchEventType.MOVE); //@ts-ignore touchType field does exist
+ 
+-        if (event.changedTouches[i].touchType === 'stylus') {
+-          continue;
+-        }
++      this.markAsInBounds(adaptedEvent.pointerId);
+ 
+-        const inBounds = isPointerInBounds(this.view, {
+-          x: adaptedEvent.x,
+-          y: adaptedEvent.y
+-        });
+-        const pointerIndex = this.pointersInBounds.indexOf(adaptedEvent.pointerId);
+-
+-        if (inBounds) {
+-          if (pointerIndex < 0) {
+-            adaptedEvent.eventType = EventTypes.ENTER;
+-            this.onPointerEnter(adaptedEvent);
+-            this.markAsInBounds(adaptedEvent.pointerId);
+-          } else {
+-            this.onPointerMove(adaptedEvent);
+-          }
+-        } else {
+-          if (pointerIndex >= 0) {
+-            adaptedEvent.eventType = EventTypes.LEAVE;
+-            this.onPointerLeave(adaptedEvent);
+-            this.markAsOutOfBounds(adaptedEvent.pointerId);
+-          } else {
+-            this.onPointerOutOfBounds(adaptedEvent);
+-          }
+-        }
++      if (++this.activePointersCounter > 1) {
++        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
++        this.onPointerAdd(adaptedEvent);
++      } else {
++        this.onPointerDown(adaptedEvent);
++      }
++    }
++  }
++
++  touchMoveListener = event => {
++    for (let i = 0; i < event.changedTouches.length; ++i) {
++      const adaptedEvent = this.mapEvent(event, EventTypes.MOVE, i, TouchEventType.MOVE); //@ts-ignore touchType field does exist
++
++      if (event.changedTouches[i].touchType === 'stylus') {
++        continue;
+       }
+-    });
+-    this.view.addEventListener('touchend', event => {
+-      for (let i = 0; i < event.changedTouches.length; ++i) {
+-        // When we call reset on gesture handlers, it also resets their event managers
+-        // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
+-        // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
+-        // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
+-        if (this.activePointersCounter === 0) {
+-          break;
+-        } //@ts-ignore touchType field does exist
+-
+-
+-        if (event.changedTouches[i].touchType === 'stylus') {
+-          continue;
+-        }
+ 
+-        const adaptedEvent = this.mapEvent(event, EventTypes.UP, i, TouchEventType.UP);
+-        this.markAsOutOfBounds(adaptedEvent.pointerId);
++      const inBounds = isPointerInBounds(this.view, {
++        x: adaptedEvent.x,
++        y: adaptedEvent.y
++      });
++      const pointerIndex = this.pointersInBounds.indexOf(adaptedEvent.pointerId);
+ 
+-        if (--this.activePointersCounter > 0) {
+-          adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
+-          this.onPointerRemove(adaptedEvent);
++      if (inBounds) {
++        if (pointerIndex < 0) {
++          adaptedEvent.eventType = EventTypes.ENTER;
++          this.onPointerEnter(adaptedEvent);
++          this.markAsInBounds(adaptedEvent.pointerId);
+         } else {
+-          this.onPointerUp(adaptedEvent);
++          this.onPointerMove(adaptedEvent);
+         }
++      } else {
++        if (pointerIndex >= 0) {
++          adaptedEvent.eventType = EventTypes.LEAVE;
++          this.onPointerLeave(adaptedEvent);
++          this.markAsOutOfBounds(adaptedEvent.pointerId);
++        } else {
++          this.onPointerOutOfBounds(adaptedEvent);
++        }
++      }
++    }
++  }
++
++  touchEndListener = event => {
++    for (let i = 0; i < event.changedTouches.length; ++i) {
++      // When we call reset on gesture handlers, it also resets their event managers
++      // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
++      // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
++      // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
++      if (this.activePointersCounter === 0) {
++        break;
++      } //@ts-ignore touchType field does exist
++
++
++      if (event.changedTouches[i].touchType === 'stylus') {
++        continue;
+       }
+-    });
+-    this.view.addEventListener('touchcancel', event => {
+-      for (let i = 0; i < event.changedTouches.length; ++i) {
+-        const adaptedEvent = this.mapEvent(event, EventTypes.CANCEL, i, TouchEventType.CANCELLED); //@ts-ignore touchType field does exist
+ 
+-        if (event.changedTouches[i].touchType === 'stylus') {
+-          continue;
+-        }
++      const adaptedEvent = this.mapEvent(event, EventTypes.UP, i, TouchEventType.UP);
++      this.markAsOutOfBounds(adaptedEvent.pointerId);
+ 
+-        this.onPointerCancel(adaptedEvent);
+-        this.markAsOutOfBounds(adaptedEvent.pointerId);
+-        this.activePointersCounter = 0;
++      if (--this.activePointersCounter > 0) {
++        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
++        this.onPointerRemove(adaptedEvent);
++      } else {
++        this.onPointerUp(adaptedEvent);
+       }
+-    });
++    }
++  }
++
++  touchCancelListener = event => {
++    for (let i = 0; i < event.changedTouches.length; ++i) {
++      const adaptedEvent = this.mapEvent(event, EventTypes.CANCEL, i, TouchEventType.CANCELLED); //@ts-ignore touchType field does exist
++
++      if (event.changedTouches[i].touchType === 'stylus') {
++        continue;
++      }
++
++      this.onPointerCancel(adaptedEvent);
++      this.markAsOutOfBounds(adaptedEvent.pointerId);
++      this.activePointersCounter = 0;
++    }
++  }
++
++  setListeners() {
++    this.view.addEventListener('touchstart', this.touchStartListener);
++    this.view.addEventListener('touchmove', this.touchMoveListener);
++    this.view.addEventListener('touchend', this.touchEndListener);
++    this.view.addEventListener('touchcancel', this.touchCancelListener)
++  }
++
++  removeListeners() {
++    this.view.removeEventListener('touchstart', this.touchStartListener);
++    this.view.removeEventListener('touchmove', this.touchMoveListener);
++    this.view.removeEventListener('touchend', this.touchEndListener);
++    this.view.removeEventListener('touchcancel', this.touchCancelListener)
+   }
+ 
+   mapEvent(event, eventType, index, touchEventType) {
+diff --git a/node_modules/react-native-gesture-handler/lib/module/web_hammer/TapGestureHandler.js b/node_modules/react-native-gesture-handler/lib/module/web_hammer/TapGestureHandler.js
+index ed067cd..a0e9850 100644
+--- a/node_modules/react-native-gesture-handler/lib/module/web_hammer/TapGestureHandler.js
++++ b/node_modules/react-native-gesture-handler/lib/module/web_hammer/TapGestureHandler.js
+@@ -173,7 +173,6 @@ class TapGestureHandler extends DiscreteGestureHandler {
+       this._shouldFireEndEvent = null;
+     }
+   }
+-
+ }
+ 
+ export default TapGestureHandler;
+diff --git a/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts b/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
+index 0e6e039..9388323 100644
+--- a/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
++++ b/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
+@@ -7,179 +7,193 @@ const POINTER_CAPTURE_EXCLUDE_LIST = new Set<string>(['SELECT', 'INPUT']);
+ export default class PointerEventManager extends EventManager<HTMLElement> {
+   private trackedPointers = new Set<number>();
+ 
+-  public setListeners(): void {
+-    this.view.addEventListener('pointerdown', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
+-      if (
+-        !isPointerInBounds(this.view, { x: event.clientX, y: event.clientY })
+-      ) {
+-        return;
+-      }
++  private pointerDownListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++    if (
++      !isPointerInBounds(this.view, { x: event.clientX, y: event.clientY })
++    ) {
++      return;
++    }
++
++    const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.DOWN);
++    const target = event.target as HTMLElement;
++
++    if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
++      target.setPointerCapture(adaptedEvent.pointerId);
++    }
++
++    this.markAsInBounds(adaptedEvent.pointerId);
++    this.trackedPointers.add(adaptedEvent.pointerId);
++
++    if (++this.activePointersCounter > 1) {
++      adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
++      this.onPointerAdd(adaptedEvent);
++    } else {
++      this.onPointerDown(adaptedEvent);
++    }
++  }
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.DOWN);
+-      const target = event.target as HTMLElement;
++  private pointerUpListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++
++    // When we call reset on gesture handlers, it also resets their event managers
++    // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
++    // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
++    // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
++    if (this.activePointersCounter === 0) {
++      return;
++    }
++
++    const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.UP);
++    const target = event.target as HTMLElement;
++
++    if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
++      target.releasePointerCapture(adaptedEvent.pointerId);
++    }
++
++    this.markAsOutOfBounds(adaptedEvent.pointerId);
++    this.trackedPointers.delete(adaptedEvent.pointerId);
++
++    if (--this.activePointersCounter > 0) {
++      adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
++      this.onPointerRemove(adaptedEvent);
++    } else {
++      this.onPointerUp(adaptedEvent);
++    }
++  }
+ 
+-      if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
+-        target.setPointerCapture(adaptedEvent.pointerId);
+-      }
++  private pointerMoveListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
++
++    const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.MOVE);
++    const target = event.target as HTMLElement;
++
++    // You may be wondering why are we setting pointer capture here, when we
++    // already set it in `pointerdown` handler. Well, that's a great question,
++    // for which I don't have an answer. Specification (https://www.w3.org/TR/pointerevents2/#dom-element-setpointercapture)
++    // says that the requirement for `setPointerCapture` to work is that pointer
++    // must be in 'active buttons state`, otherwise it will fail silently, which
++    // is lovely. Obviously, when `pointerdown` is fired, one of the buttons
++    // (when using mouse) is pressed, but that doesn't mean that `setPointerCapture`
++    // will succeed, for some reason. Since it fails silently, we don't actually know
++    // if it worked or not (there's `gotpointercapture` event, but the complexity of
++    // incorporating it here seems stupid), so we just call it again here, every time
++    // pointer moves until it succeeds.
++    // God, I do love web development.
++    if (
++      !target.hasPointerCapture(event.pointerId) &&
++      !POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)
++    ) {
++      target.setPointerCapture(event.pointerId);
++    }
++
++    const inBounds: boolean = isPointerInBounds(this.view, {
++      x: adaptedEvent.x,
++      y: adaptedEvent.y,
++    });
+ 
+-      this.markAsInBounds(adaptedEvent.pointerId);
+-      this.trackedPointers.add(adaptedEvent.pointerId);
++    const pointerIndex: number = this.pointersInBounds.indexOf(
++      adaptedEvent.pointerId
++    );
+ 
+-      if (++this.activePointersCounter > 1) {
+-        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_DOWN;
+-        this.onPointerAdd(adaptedEvent);
++    if (inBounds) {
++      if (pointerIndex < 0) {
++        adaptedEvent.eventType = EventTypes.ENTER;
++        this.onPointerEnter(adaptedEvent);
++        this.markAsInBounds(adaptedEvent.pointerId);
+       } else {
+-        this.onPointerDown(adaptedEvent);
++        this.onPointerMove(adaptedEvent);
+       }
+-    });
+-
+-    this.view.addEventListener('pointerup', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
++    } else {
++      if (pointerIndex >= 0) {
++        adaptedEvent.eventType = EventTypes.LEAVE;
++        this.onPointerLeave(adaptedEvent);
++        this.markAsOutOfBounds(adaptedEvent.pointerId);
++      } else {
++        this.onPointerOutOfBounds(adaptedEvent);
+       }
++    }
++  }
+ 
+-      // When we call reset on gesture handlers, it also resets their event managers
+-      // In some handlers (like RotationGestureHandler) reset is called before all pointers leave view
+-      // This means, that activePointersCounter will be set to 0, while there are still remaining pointers on view
+-      // Removing them will end in activePointersCounter going below 0, therefore handlers won't behave properly
+-      if (this.activePointersCounter === 0) {
+-        return;
+-      }
++  private pointerCancelListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.UP);
+-      const target = event.target as HTMLElement;
++    const adaptedEvent: AdaptedEvent = this.mapEvent(
++      event,
++      EventTypes.CANCEL
++    );
+ 
+-      if (!POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)) {
+-        target.releasePointerCapture(adaptedEvent.pointerId);
+-      }
++    this.onPointerCancel(adaptedEvent);
++    this.markAsOutOfBounds(adaptedEvent.pointerId);
++    this.activePointersCounter = 0;
++    this.trackedPointers.clear();
++  }
+ 
+-      this.markAsOutOfBounds(adaptedEvent.pointerId);
+-      this.trackedPointers.delete(adaptedEvent.pointerId);
++  private pointerEnterListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      if (--this.activePointersCounter > 0) {
+-        adaptedEvent.eventType = EventTypes.ADDITIONAL_POINTER_UP;
+-        this.onPointerRemove(adaptedEvent);
+-      } else {
+-        this.onPointerUp(adaptedEvent);
+-      }
+-    });
++    const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.ENTER);
+ 
+-    this.view.addEventListener('pointermove', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    this.onPointerMoveOver(adaptedEvent);
++  }
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.MOVE);
+-      const target = event.target as HTMLElement;
+-
+-      // You may be wondering why are we setting pointer capture here, when we
+-      // already set it in `pointerdown` handler. Well, that's a great question,
+-      // for which I don't have an answer. Specification (https://www.w3.org/TR/pointerevents2/#dom-element-setpointercapture)
+-      // says that the requirement for `setPointerCapture` to work is that pointer
+-      // must be in 'active buttons state`, otherwise it will fail silently, which
+-      // is lovely. Obviously, when `pointerdown` is fired, one of the buttons
+-      // (when using mouse) is pressed, but that doesn't mean that `setPointerCapture`
+-      // will succeed, for some reason. Since it fails silently, we don't actually know
+-      // if it worked or not (there's `gotpointercapture` event, but the complexity of
+-      // incorporating it here seems stupid), so we just call it again here, every time
+-      // pointer moves until it succeeds.
+-      // God, I do love web development.
+-      if (
+-        !target.hasPointerCapture(event.pointerId) &&
+-        !POINTER_CAPTURE_EXCLUDE_LIST.has(target.tagName)
+-      ) {
+-        target.setPointerCapture(event.pointerId);
+-      }
++  private pointerLeaveListener = (event: PointerEvent): void => {
++    if (event.pointerType === PointerType.TOUCH) {
++      return;
++    }
+ 
+-      const inBounds: boolean = isPointerInBounds(this.view, {
+-        x: adaptedEvent.x,
+-        y: adaptedEvent.y,
+-      });
+-
+-      const pointerIndex: number = this.pointersInBounds.indexOf(
+-        adaptedEvent.pointerId
+-      );
+-
+-      if (inBounds) {
+-        if (pointerIndex < 0) {
+-          adaptedEvent.eventType = EventTypes.ENTER;
+-          this.onPointerEnter(adaptedEvent);
+-          this.markAsInBounds(adaptedEvent.pointerId);
+-        } else {
+-          this.onPointerMove(adaptedEvent);
+-        }
+-      } else {
+-        if (pointerIndex >= 0) {
+-          adaptedEvent.eventType = EventTypes.LEAVE;
+-          this.onPointerLeave(adaptedEvent);
+-          this.markAsOutOfBounds(adaptedEvent.pointerId);
+-        } else {
+-          this.onPointerOutOfBounds(adaptedEvent);
+-        }
+-      }
+-    });
++    const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.LEAVE);
+ 
+-    this.view.addEventListener('pointercancel', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    this.onPointerMoveOut(adaptedEvent);
++  }
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(
+-        event,
+-        EventTypes.CANCEL
+-      );
++  private losePointerCaptureListener = (event: PointerEvent): void => {
++    const adaptedEvent: AdaptedEvent = this.mapEvent(
++      event,
++      EventTypes.CANCEL
++    );
+ 
++    if (this.trackedPointers.has(adaptedEvent.pointerId)) {
++      // in some cases the `pointerup` event is not fired, but `lostpointercapture` is
++      // we simulate the `pointercancel` event here to make sure the gesture handler stops tracking it
+       this.onPointerCancel(adaptedEvent);
+-      this.markAsOutOfBounds(adaptedEvent.pointerId);
++
+       this.activePointersCounter = 0;
+       this.trackedPointers.clear();
+-    });
++    }
++  }
+ 
+-    // onPointerEnter and onPointerLeave are triggered by a custom logic responsible for
+-    // handling shouldCancelWhenOutside flag, and are unreliable unless the pointer is down.
+-    // We therefore use pointerenter and pointerleave events to handle the hover gesture,
+-    // mapping them to onPointerMoveOver and onPointerMoveOut respectively.
++  public setListeners(): void {
++    this.view.addEventListener('pointerdown', this.pointerDownListener);
+ 
+-    this.view.addEventListener('pointerenter', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    this.view.addEventListener('pointerup', this.pointerUpListener);
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.ENTER);
++    this.view.addEventListener('pointermove', this.pointerMoveListener);
+ 
+-      this.onPointerMoveOver(adaptedEvent);
+-    });
++    this.view.addEventListener('pointercancel', this.pointerCancelListener);
+ 
+-    this.view.addEventListener('pointerleave', (event: PointerEvent): void => {
+-      if (event.pointerType === PointerType.TOUCH) {
+-        return;
+-      }
++    // onPointerEnter and onPointerLeave are triggered by a custom logic responsible for
++    // handling shouldCancelWhenOutside flag, and are unreliable unless the pointer is down.
++    // We therefore use pointerenter and pointerleave events to handle the hover gesture,
++    // mapping them to onPointerMoveOver and onPointerMoveOut respectively.
+ 
+-      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.LEAVE);
++    this.view.addEventListener('pointerenter', this.pointerEnterListener);
+ 
+-      this.onPointerMoveOut(adaptedEvent);
+-    });
++    this.view.addEventListener('pointerleave', this.pointerLeaveListener);
+ 
+     this.view.addEventListener(
+       'lostpointercapture',
+-      (event: PointerEvent): void => {
+-        const adaptedEvent: AdaptedEvent = this.mapEvent(
+-          event,
+-          EventTypes.CANCEL
+-        );
+-
+-        if (this.trackedPointers.has(adaptedEvent.pointerId)) {
+-          // in some cases the `pointerup` event is not fired, but `lostpointercapture` is
+-          // we simulate the `pointercancel` event here to make sure the gesture handler stops tracking it
+-          this.onPointerCancel(adaptedEvent);
+-
+-          this.activePointersCounter = 0;
+-          this.trackedPointers.clear();
+-        }
+-      }
++      this.losePointerCaptureListener
+     );
+   }
  
